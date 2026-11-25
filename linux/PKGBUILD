@@ -1,0 +1,77 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Sahen
+
+pkgbase=meltype
+pkgname=(meltype meltype-fcitx5)
+pkgrel=1
+pkgdesc='Japanese input method that keeps English words as typed'
+arch=(x86_64 aarch64)
+url='https://github.com/yksr-melt/Meltype'
+license=('GPL-3.0-or-later')
+# ビルド済みのファイルをそのまま配るので、シンボルを削らず debug パッケージも作らない。
+options=('!strip' '!debug')
+
+_payload=${MELTYPE_LINUX_DIR:-build/Meltype-linux}
+[[ $_payload = /* ]] || _payload="$startdir/$_payload"
+_target=/opt/meltype
+
+# build.sh が書いた版を使う。Arch では 1.2.2pre.2 のようにすると正式版より前になる。
+_version=
+if [[ -r "$_payload/meltype.xml" ]]; then
+    _version=$(sed -n 's|.*<version>\(.*\)</version>.*|\1|p' "$_payload/meltype.xml")
+fi
+_version=${_version#v}
+pkgver=${_version//-/}
+pkgver=${pkgver:-0}
+
+prepare() {
+    if [[ -z $_version || $_version == @VERSION@ ]]; then
+        printf '組み立て済みの meltype.xml から版を読めません: %s\n' "$_payload" >&2
+        return 1
+    fi
+
+    # makepkg は実行環境の CPU をパッケージ名に使うので、別の CPU 向けに組み立てたファイルを弾く。
+    local machine
+    machine=$(od -An -tx1 -j18 -N2 "$_payload/libMeltypeNative.so" | tr -d ' \n')
+    case $CARCH:$machine in
+        x86_64:3e00|aarch64:b700) ;;
+        *)
+            printf 'libMeltypeNative.so が %s 用の ELF と一致しません (e_machine: %s)\n' "$CARCH" "$machine" >&2
+            return 1
+            ;;
+    esac
+}
+
+package_meltype() {
+    # ICU と X11 のライブラリは本体と設定アプリが実行時に読み込む。
+    depends=(glibc gcc-libs zlib icu fontconfig libx11 libice libsm libxcursor libxext libxfixes libxi libxrandr)
+    optdepends=(
+        'ibus: IBus input method'
+        'python: IBus engine runtime'
+        'python-gobject: IBus GObject Introspection bindings'
+        'meltype-fcitx5: fcitx5 input method'
+    )
+
+    local dest="$pkgdir$_target"
+    install -d "$dest" "$pkgdir/usr/bin" "$pkgdir/usr/share/ibus/component" "$pkgdir/usr/share/applications"
+    install -m644 "$_payload"/{libMeltypeNative.so,libSkiaSharp.so,libHarfBuzzSharp.so,icon.png,LICENSE,THIRD-PARTY-NOTICES.md} "$dest/"
+    install -m755 "$_payload"/{ibus-engine-meltype,meltype-settings} "$dest/"
+    cp -R "$_payload"/{mozc,zenzai} "$dest/"
+    find "$dest"/{mozc,zenzai} -type d -exec chmod 755 {} +
+    find "$dest"/{mozc,zenzai} -type f -exec chmod 644 {} +
+    chmod 755 "$dest"/{mozc/meltype_mozc_helper,zenzai/llama-server}
+
+    ln -s "$_target/meltype-settings" "$pkgdir/usr/bin/meltype-settings"
+    sed "s|@DIR@|$_target|g" "$_payload/meltype.xml" > "$pkgdir/usr/share/ibus/component/meltype.xml"
+    sed "s|@DIR@|$_target|g" "$_payload/ibus-setup-meltype.desktop" > "$pkgdir/usr/share/applications/ibus-setup-meltype.desktop"
+}
+
+package_meltype-fcitx5() {
+    pkgdesc='fcitx5 addon for Meltype'
+    depends=("meltype=$pkgver-$pkgrel" fcitx5)
+
+    install -Dm644 "$_payload/fcitx5/meltype.so" "$pkgdir/usr/lib/fcitx5/meltype.so"
+    install -Dm644 "$_payload/fcitx5/meltype-addon.conf" "$pkgdir/usr/share/fcitx5/addon/meltype.conf"
+    install -d "$pkgdir/usr/share/fcitx5/inputmethod"
+    sed "s|@DIR@|$_target|g" "$_payload/fcitx5/meltype.conf" > "$pkgdir/usr/share/fcitx5/inputmethod/meltype.conf"
+}

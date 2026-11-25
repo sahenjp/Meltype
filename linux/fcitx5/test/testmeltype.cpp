@@ -6,12 +6,12 @@
 //   cmake -S linux/fcitx5 -B build -DBUILD_TESTING=ON && cmake --build build && MELTYPE_DIR=… ctest --test-dir build
 
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <testfrontend_public.h>
 #include <fcitx-utils/event.h>
 #include <fcitx-utils/eventdispatcher.h>
 #include <fcitx-utils/log.h>
-#include <fcitx-utils/stringutils.h>
 #include <fcitx-utils/testing.h>
 #include <fcitx/addonmanager.h>
 #include <fcitx/inputcontextmanager.h>
@@ -47,7 +47,8 @@ void scheduleEvent(EventDispatcher *dispatcher, Instance *instance) {
         FCITX_ASSERT(description.valueByPath("MeltypeConfig/Settings/Type") &&
                      *description.valueByPath("MeltypeConfig/Settings/Type") == "External");
         const auto *command = description.valueByPath("MeltypeConfig/Settings/External");
-        FCITX_ASSERT(command && stringutils::endsWith(*command, "/meltype-settings")) << (command ? *command : "");
+        const std::filesystem::path executable = command ? *command : "";
+        FCITX_ASSERT(executable.is_absolute() && executable.filename() == "meltype-settings") << executable;
         auto group = instance->inputMethodManager().currentGroup();
         group.inputMethodList().clear();
         group.inputMethodList().push_back(InputMethodGroupItem("keyboard-us"));

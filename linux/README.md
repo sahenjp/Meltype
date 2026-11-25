@@ -57,3 +57,16 @@ pkill -f ibus-engine-meltype || true
 /opt/meltype/ibus-engine-meltype --version   # 版だけ確認するとき
 /opt/meltype/ibus-engine-meltype
 ```
+
+### Arch Linux・CachyOS
+
+Arch Linux・CachyOS では、対象環境の fcitx5 を入れた状態で `linux/build.sh` を実行し、`linux/build/Meltype-linux/` に本体とアドオンを組み立てます。
+ほかのフォルダーに組み立てたファイルがあるときは、`MELTYPE_LINUX_DIR` にそのフォルダーの絶対パスを指定します。
+リポジトリのルートから次を実行します。
+
+```bash
+makepkg -D linux
+```
+
+できた `meltype` を `pacman -U` で入れ、fcitx5 で使うときは `meltype-fcitx5` も一緒に入れます。
+IBus で使うときは `ibus` も入れます。
