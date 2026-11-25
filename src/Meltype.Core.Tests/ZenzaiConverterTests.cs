@@ -675,16 +675,33 @@ internal static class ZenzaiConverterTests
     [Test]
     public static void Issue1307_ServerArguments_PassDevice()
     {
-        // 使う GPU が空 (既定) なら、今までと同じ引数 (-ngl 0 で CPU だけ。--device は渡さない)
-        var cpu = ZenzaiConverter.ServerArguments("model.gguf", 8080, "");
-        Assert.Equal("0", cpu[cpu.IndexOf("-ngl") + 1]);
-        Assert.True(!cpu.Contains("--device"), string.Join(" ", cpu));
-        // 使う GPU を書いたら --device だけを渡し、載せる層の数は llama-server に任せる (-ngl を渡さない)
+        // 古い CPU 版にも渡せるように、GPU を指定しなければ -ngl 0 を使う
+        foreach (var device in new[] { "", "  " })
+        {
+            var cpu = ZenzaiConverter.ServerArguments("model.gguf", 8080, device);
+            Assert.True(cpu.Contains("-ngl"), string.Join(" ", cpu));
+            Assert.Equal("0", cpu[cpu.IndexOf("-ngl") + 1]);
+            Assert.True(!cpu.Contains("--device") && !cpu.Contains("--flash-attn"), string.Join(" ", cpu));
+        }
+        // GPU では Flash Attention を使えるかと載せる層の数を llama-server に任せる
         var gpu = ZenzaiConverter.ServerArguments("model.gguf", 8080, " Vulkan0 ");
+        Assert.True(gpu.Contains("--device") && gpu.Contains("--flash-attn"), string.Join(" ", gpu));
         Assert.Equal("Vulkan0", gpu[gpu.IndexOf("--device") + 1]);
+        Assert.Equal("auto", gpu[gpu.IndexOf("--flash-attn") + 1]);
         Assert.True(!gpu.Contains("-ngl"), string.Join(" ", gpu));
         Assert.True(gpu.Contains("--override-kv"), "zenz の前処理の差し替えは残す");
-        Assert.Equal("", new Meltype.Config.Settings { ZenzaiDevice = "  " }.Normalize().ZenzaiDevice, "空白だけなら空");
+        Assert.Equal("", new Settings { ZenzaiDevice = "  " }.Normalize().ZenzaiDevice, "空白だけなら空");
+    }
+
+    [Test]
+    public static void LiveConversion_UsesShorterSettleWithGpu()
+    {
+        using var cpu = new ZenzaiConverter("", "");
+        using var blank = new ZenzaiConverter("", "", device: "  ");
+        using var gpu = new ZenzaiConverter("", "", device: " Vulkan0 ");
+        Assert.Equal(60, cpu.LiveSettleMs, "CPU では打鍵をまとめて推論の回数を減らす");
+        Assert.Equal(cpu.LiveSettleMs, blank.LiveSettleMs, "GPU 名が空白だけなら CPU");
+        Assert.Equal(10, gpu.LiveSettleMs, "GPU では変換を早く始める");
     }
 
     [Test]

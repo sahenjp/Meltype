@@ -60,6 +60,9 @@ internal sealed class ZenzaiConverter : IKanjiConverter, IDisposable
 
     // 打鍵が続く間は最後の読みだけを推論する (CPU のみのときに推論が積み重ならないように)
     private const int SettleMs = 60;
+    // GPU では推論が早く終わるため、変換結果を早く出せるように打鍵をまとめる時間を短くする
+    private const int GpuSettleMs = 10;
+    internal int LiveSettleMs => _device.Length == 0 ? SettleMs : GpuSettleMs;
 
     // 応答が遅かった (CPU の負荷が高いなど) ときは、しばらく使わず Mozc に任せる。
     private const int DefaultPauseMs = 5000;
@@ -79,21 +82,21 @@ internal sealed class ZenzaiConverter : IKanjiConverter, IDisposable
         _serverPath = serverPath;
         _modelPath = modelPath;
         _timeoutMs = timeoutMs;
-        _device = device;
-        _worker = new LatestRequestWorker<LiveRequest>(ProcessBackground, SettleMs);
+        _device = device.Trim();
+        _worker = new LatestRequestWorker<LiveRequest>(ProcessBackground, LiveSettleMs);
     }
 
     /// <summary>
     /// llama-server に渡す引数 (issue #1307: 使う GPU)。
     /// 使う GPU が空なら、今までどおり -ngl 0 で CPU だけで計算する (--device none を受け付けない古い llama-server でも動くように)。
-    /// 使う GPU を書いたら --device だけを渡し、GPU に載せる層の数は llama-server に任せる (-ngl の既定は auto で、空いている VRAM に合わせる)。
+    /// 使う GPU を書いたら、Flash Attention を使えるかと GPU に載せる層の数を llama-server に任せる (空いている VRAM に合わせる)。
     /// </summary>
     internal static List<string> ServerArguments(string modelPath, int port, string device)
     {
         var arguments = new List<string> { "-m", modelPath, "--host", "127.0.0.1", "--port", port.ToString(CultureInfo.InvariantCulture), "-c", "1024", "--parallel", "1",
             // zenz の前処理 (gpt2-small-japanese-char) は本家の llama.cpp に無く、読み込めない。gpt-2 に差し替えると本家でも動く (#849 で Serugu さんが確かめた)
             "--override-kv", "tokenizer.ggml.pre=str:gpt-2" };
-        if (device.Trim() is { Length: > 0 } name) arguments.AddRange(["--device", name]);
+        if (device.Trim() is { Length: > 0 } name) arguments.AddRange(["--device", name, "--flash-attn", "auto"]);
         else arguments.AddRange(["-ngl", "0"]);
         return arguments;
     }

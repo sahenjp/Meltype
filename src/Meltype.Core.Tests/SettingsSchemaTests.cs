@@ -34,12 +34,15 @@ internal static class SettingsSchemaTests
     }
 
     [Test]
-    public static void PlatformNote_JoinsPlatforms()
+    public static void ZenzaiDevice_AppearsInWindowsAndLinuxSettings()
     {
-        // 今の Settings には OS が複数の項目が無いので、組を直接渡す
-        var platforms = SettingsSchema.PlatformNames(Platform.Windows | Platform.Mac);
-        Assert.Equal("Windows,Mac", string.Join(",", platforms), "x-platforms に使う OS をすべて出す");
-        Assert.Equal("Windows・Mac のみ。", SettingsSchema.PlatformNote(platforms), "OS が複数なら・でつなぐ");
+        var schema = JsonNode.Parse(SettingsSchema.Create())!;
+        var device = schema["properties"]![nameof(Settings.ZenzaiDevice)]!;
+        Assert.Equal("Windows,Linux", string.Join(",", device["x-platforms"]!.AsArray().Select(n => n!.GetValue<string>())), "使う GPU は Windows と Linux の設定に出す");
+        Assert.True(device["description"]!.GetValue<string>().StartsWith("Windows・Linux のみ。", StringComparison.Ordinal), "OS が複数なら・でつなぐ");
+        var shown = SettingsCatalog.ForThisPlatform().SelectMany(category => category.Items)
+            .Any(item => item.Property.Name == nameof(Settings.ZenzaiDevice));
+        Assert.Equal(!OperatingSystem.IsMacOS(), shown, "設定画面に使う GPU があるか");
     }
 
     [Test]
