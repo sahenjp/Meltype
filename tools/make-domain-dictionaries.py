@@ -10,17 +10,18 @@
 #   MELTYPE_MOZC=… python3 tools/make-domain-dictionaries.py skk SKK-JISYO.propernoun > dictionaries/domain-propernouns.txt
 #   MELTYPE_MOZC=… python3 tools/make-domain-dictionaries.py skk SKK-JISYO.jinmei SKK-JISYO.fullname > dictionaries/domain-names.txt
 #   MELTYPE_MOZC=… python3 tools/make-domain-dictionaries.py laws <e-Gov の laws-*.json のフォルダー> > dictionaries/domain-laws.txt
-#   MELTYPE_MOZC=… python3 tools/make-domain-dictionaries.py sudachi propernouns core_lex.csv > dictionaries/domain-propernouns-sudachi.txt
-#   MELTYPE_MOZC=… python3 tools/make-domain-dictionaries.py sudachi words core_lex.csv > dictionaries/domain-words-sudachi.txt
+#   MELTYPE_MOZC=… python3 tools/make-domain-dictionaries.py sudachi propernouns core_lex.csv small_lex.csv notcore_lex.csv > dictionaries/domain-propernouns-sudachi.txt
+#   MELTYPE_MOZC=… python3 tools/make-domain-dictionaries.py sudachi words core_lex.csv small_lex.csv notcore_lex.csv > dictionaries/domain-words-sudachi.txt
 #
 # どの辞書も、Mozc の変換ヘルパー (環境変数 MELTYPE_MOZC) に読みを変換させ、Mozc が出せない語だけを入れる。
 #
 # 入手先:
 #   JMED-DICT-mini: https://sociocom.naist.jp/jmed-dict/ (zip を展開したフォルダーを渡す)
-#   IDiME: https://github.com/ssvp003/IDiME の src/IDiME_for_Meltype.tsv
-#   SKK 辞書: https://github.com/skk-dev/dict
+#   IDiME: https://github.com/ssvp003/IDiME/releases/tag/v0.3.2 の IDiME_for_Meltype.tsv
+#   SKK 辞書: https://github.com/skk-dev/dict/tree/0a164e6b990c5eb5b59eb7d8789f08865dc2f644
 #   e-Gov 法令: https://laws.e-gov.go.jp/api/2/laws?limit=1000&offset=0 (offset を 1000 ずつ増やして全部)
-#   SudachiDict: http://sudachi.s3-website-ap-northeast-1.amazonaws.com/sudachidict-raw/ の core_lex.zip
+#   SudachiDict full (20261015) の V0 ソース: https://d2ej7fkh96fzlu.cloudfront.net/sudachidict-raw/v0/20261015/
+#   small_lex.zip・core_lex.zip・notcore_lex.zip を展開し、それぞれの CSV を渡す。GitHub Releases の full ZIP にはビルド済みの辞書が入っている。
 # 標準ライブラリだけで動く (.xlsx は zip の中の XML を直接読む)。
 import csv
 import json
@@ -28,7 +29,7 @@ import os
 import re
 import subprocess
 import sys
-import threading
+import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -65,29 +66,34 @@ def add(entries, reading, word):
 
 def known_to_mozc(entries):
     """Mozc の変換ヘルパーが読みから出せる語を除く (1 つの文節の候補か、文節をつないだ最初の変換結果)。"""
-    readings = sorted(entries)
-    helper = subprocess.Popen([os.environ['MELTYPE_MOZC'], ''], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding='utf-8')
-    if helper.stdout.readline().strip() != 'READY':
-        raise RuntimeError('Mozc の変換ヘルパーが起動しない')
-
-    # 書き終わる前に読み始めないと、ヘルパーの出力のパイプが詰まって止まる
-    def feed():
-        for reading in readings:
-            helper.stdin.write(f'C\t\t{reading}\n')
-        helper.stdin.write('Q\n')
-        helper.stdin.close()
-    threading.Thread(target=feed, daemon=True).start()
-    for reading, line in zip(readings, helper.stdout):
-        clauses = [c.split('\x1f') for c in line.rstrip('\n').split('\x1e')]
-        known = {''.join(c[1] for c in clauses if len(c) > 1)}
-        if len(clauses) == 1:
-            known.update(clauses[0][1:])
-        words = [w for w in entries[reading] if w not in known]
-        if words:
-            entries[reading] = words
-        else:
-            del entries[reading]
-    helper.wait()
+    # 学習履歴が候補に混ざらないよう、空のプロファイルで変換する。
+    with tempfile.TemporaryDirectory() as profile, subprocess.Popen(
+        [os.environ['MELTYPE_MOZC'], profile], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        text=True, encoding='utf-8', bufsize=1,
+    ) as helper:
+        try:
+            if helper.stdout.readline().strip() != 'READY':
+                raise RuntimeError('Mozc の変換ヘルパーが起動しない')
+            for reading in sorted(entries):
+                helper.stdin.write(f'C\t\t{reading}\n')
+                line = helper.stdout.readline()
+                if not line:
+                    raise RuntimeError(f'Mozc の変換ヘルパーが「{reading}」に応答しなかった')
+                clauses = [c.split('\x1f') for c in line.rstrip('\n').split('\x1e')]
+                known = {''.join(c[1] for c in clauses if len(c) > 1)}
+                if len(clauses) == 1:
+                    known.update(clauses[0][1:])
+                words = [w for w in entries[reading] if w not in known]
+                if words:
+                    entries[reading] = words
+                else:
+                    del entries[reading]
+            helper.stdin.write('Q\n')
+            if helper.wait() != 0:
+                raise RuntimeError('Mozc の変換ヘルパーが異常終了した')
+        finally:
+            if helper.poll() is None:
+                helper.kill()
     return entries
 
 
@@ -143,7 +149,7 @@ def it(path):
             add(entries, fields[0], fields[1])
     header = [
         '# Meltype 分野の辞書: 情報 (高等学校の情報科の用語)',
-        '# 元データ: IDiME (https://github.com/ssvp003/IDiME)。情報処理学会 情報入試委員会「情報科全教科書用語リスト 第2版」をもとにしたもの',
+        '# 元データ: IDiME v0.3.2 (https://github.com/ssvp003/IDiME/releases/tag/v0.3.2)。情報処理学会 情報入試委員会「情報科全教科書用語リスト 第2版」をもとにしたもの',
         '# ライセンス: CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/)。この派生データも CC BY-SA 4.0。',
         '# 加工: 読みがひらがなだけの行を、読みで 1 行にまとめた。かなだけで書く語と、よく使う語の読み (readings.txt) は除いた。',
     ]
@@ -219,26 +225,56 @@ def laws(folder):
 
 # SudachiDict の分類 (品詞の 2〜4 番目) → 分野
 SUDACHI = {
-    # 人名 (固有名詞,人名) は入れない。まれな字の組み合わせ (粥多朗) が多く、名前として確かめられない
+    # 人名はまれな字の組み合わせが多く、名前として確かめにくい。地名は郵便番号の変換で扱う。
     'propernouns': lambda pos: pos[0] == '固有名詞' and pos[1] == '一般',
     'words': lambda pos: pos[0] == '普通名詞',
 }
 
 
-def sudachi(kind, path):
+# 記号は作品名や専門用語に使う中点・ハイフンなどに限る。
+SUDACHI_SUPPLEMENT_WORD = re.compile(r'[ぁ-ゖァ-ヺ\u3400-\u9fff々〆ヶa-zA-Zａ-ｚＡ-Ｚ0-9０-９ー・&＆+＋‐=＝-]+')
+
+
+def sudachi(kind, path, *paths):
     entries = {}
-    with open(path, encoding='utf-8', newline='') as f:
-        for row in csv.reader(f):
-            # 見出し, 左id, 右id, コスト, 表記, 品詞 1〜6, 読み, 正規化表記, …。地名 (固有名詞,地名) は町名・字名がほとんどで、郵便番号の変換 (#343) で扱う
-            # 正規化表記 (13 列目) と違う表記は異表記 (洗ひざらし・いとま乞ひ)。Mozc で絞ると異表記ばかり残るので、正規化表記と同じ表記だけ
-            if len(row) < 13 or row[5] != '名詞' or not SUDACHI[kind](row[6:9]) or not KANJI.search(row[4]) or row[4][0].isdigit() or row[4] != row[12]:
-                continue
-            add(entries, row[11], row[4])
+    paths = [Path(p) for p in (path, *paths)]
+    for path in paths:
+        with path.open(encoding='utf-8', newline='') as f:
+            rows = csv.reader(f)
+            for row in rows:
+                if rows.line_num == 1 and row[:5] == ['IndexForm', 'LeftId', 'RightId', 'Cost', 'Headword']:
+                    raise ValueError(f'{path.name}: V0 の辞書ソース CSV を指定してください')
+                if len(row) < 13 or row[5] != '名詞' or not SUDACHI[kind](row[6:9]):
+                    continue
+                # 正規化表記と異なる語を残すと、Mozc にない旧仮名の異表記が候補に並ぶ。
+                word, reading = row[4], row[11]
+                if word != row[12] or not KANJI.search(word) or word[0].isdigit():
+                    continue
+                if path.name in ('small_lex.csv', 'notcore_lex.csv'):
+                    # 分割用で単独では引けない語、長い題名や記号の多い語を除く。
+                    if row[1] == '-1' or not 2 <= len(word) <= 16 or not 3 <= len(reading) <= 24 or not SUDACHI_SUPPLEMENT_WORD.fullmatch(word):
+                        continue
+                    # 語末の促音は後ろに続く音があるときの読み (数学の スウガッ など)。
+                    if reading.endswith(('ッ', 'っ')):
+                        continue
+                    cost = int(row[3])
+                    # small の普通名詞はコスト 7404 から古い漢語が大量に増える。
+                    if path.name == 'small_lex.csv' and kind == 'words' and cost >= 7404:
+                        continue
+                    if path.name == 'notcore_lex.csv' and cost >= 10000:
+                        # コスト 10000 には寺社名や動植物名が多い。15000 までは、
+                        # サ変可能の名詞と、コストが 10000 より高い分割種別 A の固有名詞も残す。
+                        # これらにはノーコード開発や鬼滅の刃のような語が含まれる。
+                        standalone_name = kind == 'propernouns' and cost > 10000 and row[14:15] == ['A']
+                        if cost > 15000 or not (row[7] == 'サ変可能' or standalone_name):
+                            continue
+                add(entries, reading, word)
     header = [
-        f'# Meltype 分野の辞書: {dict(propernouns="固有名詞", words="一般の語")[kind]} (SudachiDict core から作成)',
-        '# 元データ: SudachiDict (株式会社ワークスアプリケーションズ) https://github.com/WorksApplications/SudachiDict',
+        f'# Meltype 分野の辞書: {dict(propernouns="固有名詞", words="一般の語")[kind]} (SudachiDict から作成)',
+        '# 元データ: SudachiDict (20261015、株式会社ワークスアプリケーションズ) https://github.com/WorksApplications/SudachiDict/tree/v20261015',
+        '# 入力 (V0): ' + '・'.join(p.name for p in paths),
         '# ライセンス: Apache License 2.0。SudachiDict は UniDic の一部 (BSD-3-Clause、Copyright (c) 2011-2013, The UniDic Consortium) を含む。全文は THIRD-PARTY-NOTICES.md。',
-        '# 加工: 漢字を含む名詞のうち正規化表記と同じ表記と、読みを取り出し、かなだけで書く語・よく使う語の読み (readings.txt) を除いた。',
+        '# 加工: 漢字を含み、正規化表記と一致する名詞の表記と読みを取り出した。よく使う語の読みを除き、small と notcore からは長さ・文字種・コストなどで語を絞った。',
     ]
     return header, entries
 
